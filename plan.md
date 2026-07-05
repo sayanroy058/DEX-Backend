@@ -87,12 +87,45 @@ The backend must support:
 
 ## Architecture
 
-- `8 GB` EC2: primary API, websocket gateway, order processor, and bot workers if load is moderate
-- `2 GB` EC2: secondary API/websocket node and lightweight worker capacity
+- `16 GB` EC2: primary API, websocket gateway, and order processor (matching engine gets dedicated CPU/memory headroom; move to its own instance if order-book churn saturates this node under load test)
+- `8 GB` EC2: secondary API/websocket node, bot workers, and background job processing
 - Load balancer: enabled if websocket/API concurrency or failover requirements justify it
 - Database: hosted PostgreSQL
 - Cache/queue: hosted Redis
 - Storage: object storage for logs, exports, snapshots, and audit archives
+
+Sizing above is a starting point for 20k concurrent users; confirm with load tests in Phase 5 and scale up (or split matching engine onto a dedicated node) before production launch if saturated.
+
+## Matching Engine Concurrency Model
+
+- Order book state is partitioned by symbol: one authoritative in-memory book per symbol, owned by a single worker (single-writer-per-symbol) to avoid lock contention and race conditions on price-time priority.
+- Redis is used to route incoming orders to the correct symbol-owning worker (consistent hashing or a fixed shard map).
+- Every accepted order, match, and fill is persisted to PostgreSQL synchronously (or via a durable write-ahead queue) before acknowledging the client, so in-memory book state is always reconstructable from durable storage after a crash/restart.
+- Cross-symbol operations (bulk-cancel, portfolio views) read from PostgreSQL, not from the in-memory books directly.
+- This decision must be finalized before Prisma schema design in Phase 1, since it determines whether order-book rows need row-level locking or are treated as an append-only event log reconstructed by the owning worker on startup.
+
+## Custody and Key Management
+
+- Platform is custodial: user deposits move to platform-controlled wallets, and withdrawals are signed and broadcast by the platform.
+- Wallet tiers:
+  - Hot wallet: small operational balance per chain, used to fund outbound withdrawals directly. Kept minimal and refilled from cold storage on a schedule or threshold trigger.
+  - Cold/treasury wallet: holds the majority of platform funds. Not connected to any always-on signing service.
+- Signing infrastructure:
+  - Use an MPC signing service or HSM-backed signer for hot wallet transactions. No raw private keys stored in application config, environment variables, or the database.
+  - Cold wallet requires multisig (e.g., Gnosis Safe or chain-equivalent) with a defined signer quorum and offline/air-gapped key holders.
+- Withdrawal signing flow:
+  - Withdrawal request is validated and risk-checked, then queued.
+  - A separate signing worker (isolated from the public API) pulls approved withdrawals, requests a signature from the MPC/HSM service, and broadcasts the transaction.
+  - Signing worker enforces its own per-transaction and rolling daily withdrawal caps independent of the API-layer risk checks, so a compromised API cannot drain the hot wallet past the cap.
+- Every signing event, key-access event, and treasury movement is audit logged and alertable.
+- This section must be finalized (provider chosen: MPC vendor vs self-hosted HSM vs multisig-only) before Phase 3 deposit/withdrawal work begins — it is the highest-risk unresolved item in this plan.
+
+## Bot Inventory Funding
+
+- Market-maker bot inventory is funded from the platform treasury (see Custody and Key Management), allocated to a dedicated bot-owned internal ledger balance per symbol — not a separate on-chain wallet.
+- Allocation is a manual or scheduled treasury-to-bot internal transfer, tracked the same way as any internal ledger movement (audit logged, reversible only through the same transfer mechanism).
+- Bot risk limits (max position size, max notional per symbol, max daily loss) are enforced against this allocated balance, not against total treasury funds, so a bot failure cannot exceed its funded allocation.
+- Replenishment/rebalancing of bot inventory back to treasury (or vice versa) follows the kill-switch and admin approval path, not automated.
 
 ## Delivery Phases
 

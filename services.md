@@ -5,8 +5,8 @@ This backend should be deployed with the following services and managed componen
 ## Compute
 
 - `AWS EC2`
-  - `8 GB` instance for primary API, websocket gateway, order processing, and bot workers
-  - `2 GB` instance for secondary API/websocket traffic and lightweight worker capacity
+  - `16 GB` instance for primary API, websocket gateway, and order processing (matching engine may move to a dedicated instance if load testing shows saturation)
+  - `8 GB` instance for secondary API/websocket traffic, bot workers, and background job processing
 - `AWS Load Balancer` or `ALB`
   - Optional but recommended once traffic grows or you need failover across both EC2 nodes
 
@@ -51,6 +51,15 @@ This backend should be deployed with the following services and managed componen
   - Can be implemented with BullMQ or equivalent
 - Optional `AWS SQS`
   - Useful if you want a managed queue for non-latency-critical background tasks
+
+## Custody and Signing
+
+- `MPC signing service` (e.g., Fireblocks, or equivalent) or `HSM`
+  - Signs hot wallet withdrawal transactions. No raw private keys in application config or database.
+- `Multisig wallet` (e.g., Gnosis Safe or chain-equivalent)
+  - Holds cold/treasury funds, requires quorum of offline signers.
+- Isolated signing worker
+  - Runs separate from the public API, enforces independent withdrawal caps.
 
 ## Blockchain Verification
 

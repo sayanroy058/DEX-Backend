@@ -55,6 +55,7 @@ No email/password login is allowed.
 - Nonces must expire.
 - Replay protection is required.
 - Sessions must be revocable.
+- `POST /api/v1/auth/nonce` is unauthenticated by nature and is a wallet-enumeration/spam target: rate limit per IP and per wallet address, and cap outstanding unexpired nonces per wallet.
 
 ## 3. Wallet and Funding APIs
 
@@ -81,10 +82,12 @@ No email/password login is allowed.
 
 - `POST /api/v1/wallet/withdraw/request`
   - creates a withdrawal request
-  - validates 2-step verification and risk checks if enabled
+  - validates risk checks (limits, velocity, balance)
+  - requires a second wallet signature (re-sign the withdrawal payload with the same connected wallet) as the second factor, since no email/password/TOTP channel exists on this platform
 
 - `POST /api/v1/wallet/withdraw/confirm`
-  - confirms a pending withdrawal
+  - confirms a pending withdrawal by submitting the second signature
+  - request is queued for the isolated signing worker (see plan.md Custody and Key Management) once confirmed; API layer never signs or broadcasts directly
 
 - `GET /api/v1/wallet/withdrawals`
   - returns withdrawal history and status
@@ -450,7 +453,15 @@ If the team needs to phase delivery, the minimum release should include:
 7. token registry and pricing APIs
 8. admin audit and risk APIs
 
-## 16. Assumptions
+## 16. Rate Limiting
+
+- Per-endpoint rate limits required, enforced via Redis, tiered by sensitivity:
+  - auth endpoints (`/auth/nonce`, `/auth/verify`): strict, per-IP and per-wallet
+  - order entry (`POST /orders`, cancel, bulk-cancel): per-user, tuned to prevent order-spam/matching-engine overload
+  - market data (`GET /markets/*`): generous, cache-backed, per-IP
+  - withdrawal endpoints: strict, per-user, independent of the signing worker's own caps
+
+## 17. Assumptions
 
 - No email/password login exists anywhere in the platform.
 - Wallet address is the primary identity.
