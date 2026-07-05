@@ -6,6 +6,8 @@ Build a production-first TypeScript backend for the DEX.ai platform inside `DEX-
 
 The backend must support:
 - authenticated user/account flows
+- wallet-based login with no email/password flow
+- on-chain wallet funding verification
 - trading APIs
 - TradingView-based chart and market data delivery
 - a spot-only market-maker bot that places market orders only
@@ -14,11 +16,16 @@ The backend must support:
 ## Key Changes
 
 - Create a modular backend with clear bounded areas:
-  - auth and user/session management
+  - wallet auth and user/session management
   - market data and TradingView integration
   - order entry, matching, fills, positions, balances, and portfolio services
   - bot management and execution
   - P2P, copy-trade, support, and admin foundations
+
+- Treat the wallet address as the primary login identity.
+  - when a user connects a supported wallet, create or load the platform user record for that wallet address
+  - no email/password signup or password reset flows
+  - session ownership should be tied to the connected wallet and signed proof-of-ownership flow
 
 - Make the API layer stateless so both EC2 nodes can serve traffic behind the load balancer.
 
@@ -31,6 +38,7 @@ The backend must support:
 
 - Use PostgreSQL for durable trading records:
   - users
+  - wallet identities and session claims
   - wallets and balances
   - orders
   - matching events and fills
@@ -44,6 +52,13 @@ The backend must support:
   - market orders match against available resting liquidity
   - if the best available liquidity is the market-maker bot, the bot is the counterparty and the trade is executed
   - no order bypasses the platform matching and fill pipeline
+
+- Add an on-chain funding verification pipeline:
+  - users initiate a deposit from a connected wallet into a platform-controlled wallet or deposit address
+  - deposits are only credited after blockchain confirmation and transaction verification
+  - the backend must verify transfer status using online trackers / chain explorers such as Etherscan or equivalent RPC/indexer sources
+  - each deposit should store transaction hash, chain, sender, recipient, amount, confirmation count, and verification status
+  - withdrawals should be tracked and reconciled similarly, even if the application later executes them off-chain
 
 - Integrate TradingView through a backend data-feed layer:
   - normalized OHLCV candle API
@@ -68,6 +83,7 @@ The backend must support:
   - read/write separation in service design
   - health checks and graceful shutdown
   - partitioned order processing by market/symbol if needed
+  - fast wallet-session verification and deposit-reconciliation workers
 
 ## Architecture
 
@@ -83,7 +99,7 @@ The backend must support:
 1. Foundation
    - repo scaffold, environment config, logging, validation, error handling, health endpoints
    - Prisma schema and migrations
-   - auth/session primitives and RBAC
+   - wallet auth/session primitives and RBAC
    - request tracing and audit logging
 
 2. Market Data
@@ -99,6 +115,7 @@ The backend must support:
    - fills, positions, and PnL
    - risk checks and audit trail
    - websocket order-book and trade-stream updates
+   - deposit verification and funding ledger reconciliation
 
 4. Bot System
    - spot market-maker bot worker
@@ -120,7 +137,8 @@ The backend must support:
   - matching engine rules
   - bot risk checks
   - candle normalization
-  - auth/permission guards
+  - wallet auth/permission guards
+  - deposit verification logic
 
 - Integration tests for:
   - TradingView data-feed endpoints
@@ -128,12 +146,14 @@ The backend must support:
   - matching engine fills for user-to-user and user-to-bot cases
   - Redis queue processing
   - bot execution with market-only enforcement
+  - blockchain deposit verification and confirmation handling
 
 - Load tests for:
   - 20k concurrent read users on market/chart endpoints
   - websocket fanout under burst traffic
   - order-book write bursts and fill processing
   - bot job throughput and failure recovery
+  - wallet login bursts and deposit-reconciliation throughput
 
 - Resilience tests for:
   - Redis unavailability
